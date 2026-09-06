@@ -24,6 +24,7 @@ class SPYCBot(commands.Bot):
     async def setup_hook(self):
         """Load cogs and sync commands"""
         await self.load_extension("cogs.timetable_cog")
+        await self.load_extension("cogs.qr_cog")   # ⬅ 新加呢行
 
         # Sync slash commands
         try:

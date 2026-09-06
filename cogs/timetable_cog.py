@@ -6,7 +6,10 @@ import json
 import os
 
 from utils.api import SPYCAPI, _fmt_date
-from utils.embeds import create_timetable_embed, create_events_embed, create_help_embed
+from utils.embeds import (
+    create_timetable_embed, create_events_embed, create_help_embed,
+    maybe_add_dse, dse_days_left, DSE_EXAM_DATE,
+)
 
 USER_DATA_FILE = "user_data.json"
 
@@ -23,7 +26,7 @@ class TimetableView(discord.ui.View):
 
     def _update_buttons(self):
         """更新按鈕顯示日期"""
-        date_str = self.current_date.strftime("%d/%m")
+        date_str = f"{self.current_date.day}/{self.current_date.month}"
         for child in self.children:
             if isinstance(child, discord.ui.Button) and child.custom_id == "date_label":
                 child.label = date_str
@@ -34,9 +37,9 @@ class TimetableView(discord.ui.View):
         self.current_date -= timedelta(days=1)
         await self._update_message(interaction)
 
-    @discord.ui.button(label="05/09", style=discord.ButtonStyle.secondary, disabled=True, custom_id="date_label")
+    @discord.ui.button(label="📅", style=discord.ButtonStyle.secondary, disabled=True, custom_id="date_label")
     async def date_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass  # Disabled button, just for display
+        pass  # Disabled button，淨係用嚟顯示日期
 
     @discord.ui.button(label="➡", style=discord.ButtonStyle.primary, custom_id="next")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -52,6 +55,10 @@ class TimetableView(discord.ui.View):
 
     async def _update_message(self, interaction):
         """更新訊息內容"""
+        # 🔧 FIX：一定要「先」更新按鈕日期，之後先 edit message！
+        # （之前係 edit 完先 update，所以個日期 label 永遠慢一日）
+        self._update_buttons()
+
         date_str = _fmt_date(self.current_date)
         events_data = await self.api.get_date_info(date_str)
 
@@ -61,7 +68,6 @@ class TimetableView(discord.ui.View):
                 embed=None,
                 view=self
             )
-            self._update_buttons()
             return
 
         cycle_day = events_data.get("cycleDay", "")
@@ -75,9 +81,9 @@ class TimetableView(discord.ui.View):
             icon_url = self.user.display_avatar.url if hasattr(self.user, 'display_avatar') else None
             embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
             embed.set_footer(text=f"Requested by {self.user.display_name}", icon_url=icon_url)
+            maybe_add_dse(embed, self.class_name)
 
             await interaction.edit_original_response(content=None, embed=embed, view=self)
-            self._update_buttons()
             return
 
         day = cycle_day.replace("Day ", "").strip()
@@ -91,7 +97,6 @@ class TimetableView(discord.ui.View):
         )
 
         await interaction.edit_original_response(content=None, embed=embed, view=self)
-        self._update_buttons()
 
 
 class TimetableCog(commands.Cog):
@@ -164,7 +169,6 @@ class TimetableCog(commands.Cog):
 
             cycle_day = events_data.get("cycleDay", "")
             if not cycle_day:
-                # 冇課
                 embed = discord.Embed(
                     title=f"📅 Timetable for {class_name}",
                     description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
@@ -173,6 +177,7 @@ class TimetableCog(commands.Cog):
                 icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
                 embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
                 embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+                maybe_add_dse(embed, class_name)
 
                 view = TimetableView(self.api, class_name, today, interaction.user)
                 view._update_buttons()
@@ -223,6 +228,7 @@ class TimetableCog(commands.Cog):
             icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
             embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
             embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+            maybe_add_dse(embed, class_name)
 
             view = TimetableView(self.api, class_name, today, interaction.user)
             view._update_buttons()
@@ -260,12 +266,43 @@ class TimetableCog(commands.Cog):
         embed = create_events_embed(date, events)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="dse", description="DSE 倒數")
+    async def slash_dse(self, interaction: discord.Interaction):
+        days = dse_days_left()
+        date_str = f"{DSE_EXAM_DATE.day}/{DSE_EXAM_DATE.month}/{DSE_EXAM_DATE.year}"
+
+        embed = discord.Embed(color=discord.Color.red())
+        icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+        embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+
+        if days > 0:
+            stage = (
+                "😌 仲有排，慢慢嚟" if days > 100 else
+                "📚 係時候 plan 溫書時間表喇" if days > 50 else
+                "🔥 溫書模式 ON" if days > 20 else
+                "⚡ 最後衝刺階段" if days > 7 else
+                "💪 好近喇，早啲瞓養好精神"
+            )
+            embed.title = "🎯 DSE 倒數"
+            embed.description = (
+                f"**DSE 開考日：{date_str}**（首日筆試：中國語文 📖）\n\n"
+                f"仲有 **{days} 日** ⏳\n{stage}"
+            )
+        elif days == 0:
+            embed.title = "🎯 DSE 今日開考！"
+            embed.description = "深呼吸，正常發揮就得！加油！🎉"
+        else:
+            embed.title = "🎯 DSE"
+            embed.description = f"DSE 已喺 {date_str} 開考，加油撐住！💪"
+
+        await interaction.response.send_message(embed=embed)
+
     @app_commands.command(name="setclass", description="設定預設班別")
     @app_commands.describe(class_name="班別 (例如: 1A, 2B)")
     async def slash_setclass(self, interaction: discord.Interaction, class_name: str):
         class_name = class_name.upper()
 
-        # 驗證班別係咪存在
         timetable = await self.api.fetch_timetable()
         if timetable and class_name not in timetable:
             classes = ", ".join(sorted(timetable.keys()))
@@ -295,7 +332,7 @@ class TimetableCog(commands.Cog):
 
 
 # ============================================================
-# 呢個係最重要嘅部分！冇咗佢就會 NoEntryPointError
+# 冇咗佢就會 NoEntryPointError！
 # ============================================================
 async def setup(bot):
     await bot.add_cog(TimetableCog(bot))
