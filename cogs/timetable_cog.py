@@ -1,14 +1,98 @@
-import discord
+import discord  # type: ignore[reportMissingImports]
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 
-from utils.api import SPYCAPI
-from utils.embeds import create_timetable_embed, create_today_embed, create_events_embed, create_help_embed
+from utils.api import SPYCAPI, _fmt_date
+from utils.embeds import create_timetable_embed, create_events_embed, create_help_embed
 
 USER_DATA_FILE = "user_data.json"
+
+# ============================================================
+# 導航按鈕 View
+# ============================================================
+class TimetableView(discord.ui.View):
+    def __init__(self, api, class_name, current_date, user):
+        super().__init__(timeout=180)  # 3分鐘後過期
+        self.api = api
+        self.class_name = class_name
+        self.current_date = current_date
+        self.user = user
+
+    def _update_buttons(self):
+        """更新按鈕顯示日期"""
+        date_str = self.current_date.strftime("%d/%m")
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.custom_id == "date_label":
+                child.label = date_str
+
+    @discord.ui.button(label="⬅", style=discord.ButtonStyle.primary, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.current_date -= timedelta(days=1)
+        await self._update_message(interaction)
+
+    @discord.ui.button(label="05/09", style=discord.ButtonStyle.secondary, disabled=True, custom_id="date_label")
+    async def date_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass  # Disabled button, just for display
+
+    @discord.ui.button(label="➡", style=discord.ButtonStyle.primary, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.current_date += timedelta(days=1)
+        await self._update_message(interaction)
+
+    @discord.ui.button(label="今日", style=discord.ButtonStyle.success, custom_id="today")
+    async def today_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.current_date = datetime.now()
+        await self._update_message(interaction)
+
+    async def _update_message(self, interaction):
+        """更新訊息內容"""
+        date_str = _fmt_date(self.current_date)
+        events_data = await self.api.get_date_info(date_str)
+
+        if not events_data:
+            await interaction.edit_original_response(
+                content=f"❌ 搵唔到 {date_str} 嘅數據。",
+                embed=None,
+                view=self
+            )
+            self._update_buttons()
+            return
+
+        cycle_day = events_data.get("cycleDay", "")
+        if not cycle_day:
+            # 冇課（假期/周末）
+            embed = discord.Embed(
+                title=f"📅 Timetable for {self.class_name}",
+                description=f"**{self.current_date.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
+                color=discord.Color.dark_grey()
+            )
+            icon_url = self.user.display_avatar.url if hasattr(self.user, 'display_avatar') else None
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.set_footer(text=f"Requested by {self.user.display_name}", icon_url=icon_url)
+
+            await interaction.edit_original_response(content=None, embed=embed, view=self)
+            self._update_buttons()
+            return
+
+        day = cycle_day.replace("Day ", "").strip()
+        lessons = await self.api.get_class_timetable(self.class_name, day)
+
+        embed = create_timetable_embed(
+            self.class_name, lessons,
+            events_data=events_data,
+            user=self.user,
+            date_obj=self.current_date
+        )
+
+        await interaction.edit_original_response(content=None, embed=embed, view=self)
+        self._update_buttons()
+
 
 class TimetableCog(commands.Cog):
     def __init__(self, bot):
@@ -17,7 +101,6 @@ class TimetableCog(commands.Cog):
         self.user_data = self._load_user_data()
 
     def _load_user_data(self):
-        """Load user class preferences"""
         if os.path.exists(USER_DATA_FILE):
             try:
                 with open(USER_DATA_FILE, "r") as f:
@@ -27,24 +110,21 @@ class TimetableCog(commands.Cog):
         return {}
 
     def _save_user_data(self):
-        """Save user class preferences"""
         with open(USER_DATA_FILE, "w") as f:
-            json.dump(self.user_data, f)
+            json.dump(self.user_data, f, indent=2)
 
     def _get_user_class(self, user_id):
-        """Get user's preferred class"""
         return self.user_data.get(str(user_id), {}).get("class", None)
 
-    def cog_unload(self):
-        """Cleanup when cog is unloaded"""
-        self.bot.loop.create_task(self.api.close())
+    async def cog_unload(self):
+        await self.api.close()
 
     # ==================== SLASH COMMANDS ====================
 
     @app_commands.command(name="timetable", description="查詢時間表")
     @app_commands.describe(
         class_name="班別 (例如: 1A, 2B)",
-        day="星期幾 (A/B/C/D/E，留空顯示全部)"
+        day="星期幾 (A/B/C/D/E，留空=今日)"
     )
     async def slash_timetable(self, interaction: discord.Interaction, class_name: str, day: str = None):
         await interaction.response.defer()
@@ -62,6 +142,7 @@ class TimetableCog(commands.Cog):
             return
 
         if day:
+            # 指定 Day，唔使按鈕
             day = day.upper()
             if day not in timetable[class_name]:
                 days = ", ".join(sorted(timetable[class_name].keys()))
@@ -69,22 +150,48 @@ class TimetableCog(commands.Cog):
                 return
 
             lessons = timetable[class_name][day]
-            embed = create_timetable_embed(class_name, day, lessons)
+            embed = create_timetable_embed(class_name, lessons, user=interaction.user)
             await interaction.followup.send(embed=embed)
         else:
-            # Show all days
-            embeds = []
-            for d in sorted(timetable[class_name].keys()):
-                lessons = timetable[class_name][d]
-                embed = create_timetable_embed(class_name, d, lessons)
-                embeds.append(embed)
+            # 冇指定 Day，顯示今日 + 按鈕
+            today = datetime.now()
+            date_str = _fmt_date(today)
+            events_data = await self.api.get_date_info(date_str)
 
-            # Send first embed
-            await interaction.followup.send(embed=embeds[0])
+            if not events_data:
+                await interaction.followup.send("❌ 無法獲取今日資訊。")
+                return
 
-            # Send remaining embeds
-            for embed in embeds[1:]:
-                await interaction.followup.send(embed=embed)
+            cycle_day = events_data.get("cycleDay", "")
+            if not cycle_day:
+                # 冇課
+                embed = discord.Embed(
+                    title=f"📅 Timetable for {class_name}",
+                    description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
+                    color=discord.Color.dark_grey()
+                )
+                icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+                embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+                embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+
+                view = TimetableView(self.api, class_name, today, interaction.user)
+                view._update_buttons()
+                await interaction.followup.send(embed=embed, view=view)
+                return
+
+            day = cycle_day.replace("Day ", "").strip()
+            lessons = await self.api.get_class_timetable(class_name, day)
+
+            embed = create_timetable_embed(
+                class_name, lessons,
+                events_data=events_data,
+                user=interaction.user,
+                date_obj=today
+            )
+
+            view = TimetableView(self.api, class_name, today, interaction.user)
+            view._update_buttons()
+            await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="today", description="查詢今日時間表+活動")
     @app_commands.describe(class_name="班別 (例如: 1A, 2B，留空用預設)")
@@ -98,26 +205,43 @@ class TimetableCog(commands.Cog):
                 return
 
         class_name = class_name.upper()
+        today = datetime.now()
+        date_str = _fmt_date(today)
+        events_data = await self.api.get_date_info(date_str)
 
-        # Get today's cycle day from events
-        today_info = await self.api.get_today_info()
-        if not today_info:
-            await interaction.followup.send("❌ 無法獲取今日循環週資訊。")
+        if not events_data:
+            await interaction.followup.send("❌ 無法獲取今日資訊。")
             return
 
-        cycle_day = today_info.get("cycleDay", "")
+        cycle_day = events_data.get("cycleDay", "")
         if not cycle_day:
-            await interaction.followup.send("❌ 今日冇循環日資訊（可能係假期）。")
+            embed = discord.Embed(
+                title=f"📅 Timetable for {class_name}",
+                description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
+                color=discord.Color.dark_grey()
+            )
+            icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+
+            view = TimetableView(self.api, class_name, today, interaction.user)
+            view._update_buttons()
+            await interaction.followup.send(embed=embed, view=view)
             return
 
-        # Extract day letter (e.g., "Day A" -> "A")
         day = cycle_day.replace("Day ", "").strip()
-
-        # Get timetable
         lessons = await self.api.get_class_timetable(class_name, day)
 
-        embed = create_today_embed(class_name, lessons, today_info)
-        await interaction.followup.send(embed=embed)
+        embed = create_timetable_embed(
+            class_name, lessons,
+            events_data=events_data,
+            user=interaction.user,
+            date_obj=today
+        )
+
+        view = TimetableView(self.api, class_name, today, interaction.user)
+        view._update_buttons()
+        await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="events", description="查詢學校活動")
     @app_commands.describe(date="日期 (格式: D/M/YYYY，留空=今日)")
@@ -125,7 +249,7 @@ class TimetableCog(commands.Cog):
         await interaction.response.defer()
 
         if date is None:
-            date = datetime.now().strftime("%-d/%-m/%Y")
+            date = _fmt_date(datetime.now())
 
         events = await self.api.get_day_events(date)
 
@@ -141,143 +265,37 @@ class TimetableCog(commands.Cog):
     async def slash_setclass(self, interaction: discord.Interaction, class_name: str):
         class_name = class_name.upper()
 
-        # Validate class exists
+        # 驗證班別係咪存在
         timetable = await self.api.fetch_timetable()
         if timetable and class_name not in timetable:
             classes = ", ".join(sorted(timetable.keys()))
             await interaction.response.send_message(f"❌ 搵唔到 `{class_name}` 班。可用班別: {classes}")
             return
 
-        self.user_data[str(interaction.user.id)] = {"class": class_name}
+        user_id = str(interaction.user.id)
+        if user_id not in self.user_data:
+            self.user_data[user_id] = {}
+        self.user_data[user_id]["class"] = class_name
         self._save_user_data()
 
-        await interaction.response.send_message(f"✅ 已設定預設班別為 **{class_name}**！之後用 `/today` 唔使再輸入班別。")
+        await interaction.response.send_message(f"✅ 已設定你嘅預設班別為 `{class_name}`！")
 
-    @app_commands.command(name="myclass", description="顯示已設定班別")
+    @app_commands.command(name="myclass", description="顯示已設定嘅班別")
     async def slash_myclass(self, interaction: discord.Interaction):
         user_class = self._get_user_class(interaction.user.id)
         if user_class:
-            await interaction.response.send_message(f"📌 你嘅預設班別係 **{user_class}**。")
+            await interaction.response.send_message(f"📚 你嘅預設班別係 `{user_class}`。")
         else:
-            await interaction.response.send_message("❌ 你未設定預設班別。用 `/setclass <班別>` 設定。")
+            await interaction.response.send_message("❌ 你仲未設定班別，用 `/setclass <班別>` 設定。")
 
-    @app_commands.command(name="help", description="顯示使用指南")
+    @app_commands.command(name="help", description="顯示幫助")
     async def slash_help(self, interaction: discord.Interaction):
         embed = create_help_embed()
         await interaction.response.send_message(embed=embed)
 
-    # ==================== MENTION COMMANDS ====================
 
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        """Handle mention commands (@Bot ...)"""
-        if message.author.bot:
-            return
-
-        # Check if bot is mentioned
-        if self.bot.user not in message.mentions:
-            return
-
-        # Remove mentions from content
-        content = message.content
-        for mention in message.mentions:
-            content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
-        content = content.strip().lower()
-
-        if not content:
-            await message.reply("👋 你好！用 `@Bot help` 睇吓有咩指令可以用。")
-            return
-
-        args = content.split()
-        command = args[0] if args else ""
-
-        if command in ["timetable", "tt", "時間表"]:
-            await self._handle_mention_timetable(message, args[1:])
-        elif command in ["today", "今日"]:
-            await self._handle_mention_today(message, args[1:])
-        elif command in ["events", "活動"]:
-            await self._handle_mention_events(message, args[1:])
-        elif command in ["help", "幫助", "?"]:
-            embed = create_help_embed()
-            await message.reply(embed=embed)
-        else:
-            await message.reply("🤔 唔識呢個指令。用 `@Bot help` 睇吓有咩可以用。")
-
-    async def _handle_mention_timetable(self, message, args):
-        """Handle @Bot timetable <class> [day]"""
-        if not args:
-            await message.reply("❌ 用法: `@Bot timetable <班別> [Day]`\n例子: `@Bot timetable 1A A`")
-            return
-
-        class_name = args[0].upper()
-        day = args[1].upper() if len(args) > 1 else None
-
-        timetable = await self.api.fetch_timetable()
-        if not timetable:
-            await message.reply("❌ 無法連接到時間表伺服器。")
-            return
-
-        if class_name not in timetable:
-            classes = ", ".join(sorted(timetable.keys()))
-            await message.reply(f"❌ 搵唔到 `{class_name}` 班。可用班別: {classes}")
-            return
-
-        if day:
-            if day not in timetable[class_name]:
-                days = ", ".join(sorted(timetable[class_name].keys()))
-                await message.reply(f"❌ 搵唔到 Day `{day}`。可用: {days}")
-                return
-
-            lessons = timetable[class_name][day]
-            embed = create_timetable_embed(class_name, day, lessons)
-            await message.reply(embed=embed)
-        else:
-            # Show all days
-            for d in sorted(timetable[class_name].keys()):
-                lessons = timetable[class_name][d]
-                embed = create_timetable_embed(class_name, d, lessons)
-                await message.reply(embed=embed)
-
-    async def _handle_mention_today(self, message, args):
-        """Handle @Bot today [class]"""
-        if args:
-            class_name = args[0].upper()
-        else:
-            class_name = self._get_user_class(message.author.id)
-            if class_name is None:
-                await message.reply("❌ 請提供班別，或者先用 `@Bot setclass <班別>` 設定預設班別。")
-                return
-
-        today_info = await self.api.get_today_info()
-        if not today_info:
-            await message.reply("❌ 無法獲取今日循環週資訊。")
-            return
-
-        cycle_day = today_info.get("cycleDay", "")
-        if not cycle_day:
-            await message.reply("❌ 今日冇循環日資訊（可能係假期）。")
-            return
-
-        day = cycle_day.replace("Day ", "").strip()
-        lessons = await self.api.get_class_timetable(class_name, day)
-
-        embed = create_today_embed(class_name, lessons, today_info)
-        await message.reply(embed=embed)
-
-    async def _handle_mention_events(self, message, args):
-        """Handle @Bot events [date]"""
-        if args:
-            date = args[0]
-        else:
-            date = datetime.now().strftime("%-d/%-m/%Y")
-
-        events = await self.api.get_day_events(date)
-        if not events:
-            await message.reply(f"❌ 搵唔到 {date} 嘅活動數據。")
-            return
-
-        embed = create_events_embed(date, events)
-        await message.reply(embed=embed)
-
+# ============================================================
+# 呢個係最重要嘅部分！冇咗佢就會 NoEntryPointError
+# ============================================================
 async def setup(bot):
     await bot.add_cog(TimetableCog(bot))
