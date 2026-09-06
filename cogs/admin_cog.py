@@ -29,20 +29,30 @@ class AdminCog(commands.Cog):
         )
 
         # ============================================================
+        # 🛡️ .env 超級管理員 (ADMIN_IDS)
+        # 呢啲人喺任何 server / 私訊都用得所有 admin 指令，
+        # 而且永遠唔會被 blacklist 擋。
+        # ============================================================
+        self.admin_ids = set()
+        for part in (os.getenv("ADMIN_IDS") or "").split(","):
+            part = part.strip()
+            if part.isdigit():
+                self.admin_ids.add(int(part))
+        if self.admin_ids:
+            print(f"🛡️ 已載入 {len(self.admin_ids)} 個 .env 超級管理員")
+        else:
+            print("⚠️ .env 冇設定 ADMIN_IDS（淨係 server 管理員用得 admin 指令）")
+
+        # ============================================================
         # 🚫 全局封鎖 hook
-        # Patch 咗 CommandTree 嘅 interaction_check：
-        # 任何人用任何 slash command 之前都會先行呢個 check，
-        # 喺黑名單入面嘅人即刻被彈開（連 /help 都用唔到）。
         # ============================================================
         self.bot.tree.interaction_check = self._blacklist_check
 
-        # 吞埋「global interaction check failed」嗰啲 traceback，
-        # 唔係嘅話每次封鎖人，console 都會印一大舊紅字
         _orig_tree_on_error = self.bot.tree.on_error
 
         async def _quiet_tree_on_error(interaction, error):
             if isinstance(error, app_commands.CheckFailure):
-                return  # 已經喺 check 度回覆咗 ephemeral 訊息
+                return
             await _orig_tree_on_error(interaction, error)
 
         self.bot.tree.on_error = _quiet_tree_on_error
@@ -72,7 +82,11 @@ class AdminCog(commands.Cog):
         self._save_json(STATS_FILE, self.stats)
 
     def _is_admin(self, interaction: discord.Interaction) -> bool:
-        """淨係 server 管理員先用得（私訊入面一律當冇權限）"""
+        """🛡️ .env 超級管理員 或者 該 server 嘅管理員"""
+        # ① .env 超級管理員：任何地方都有效，包括私訊
+        if interaction.user.id in self.admin_ids:
+            return True
+        # ② Server 管理員權限
         if isinstance(interaction.user, discord.Member):
             return interaction.user.guild_permissions.administrator
         return False
@@ -81,6 +95,10 @@ class AdminCog(commands.Cog):
 
     async def _blacklist_check(self, interaction: discord.Interaction) -> bool:
         try:
+            # 🛡️ 超級管理員永遠放行（唔會被黑名單擋）
+            if interaction.user.id in self.admin_ids:
+                return True
+
             uid = str(interaction.user.id)
             if uid in self.blacklist:
                 if interaction.type is discord.InteractionType.application_command:
@@ -95,7 +113,7 @@ class AdminCog(commands.Cog):
                         pass
                 return False
         except Exception:
-            return True   # check 自己炸咗都照放行，唔好累埋成個 bot
+            return True
         return True
 
     # ==================== 自動記錄（核心）====================
@@ -139,7 +157,6 @@ class AdminCog(commands.Cog):
 
         s = self.stats
 
-        # 設定咗班別嘅人數
         setclass_count = 0
         try:
             with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
@@ -258,7 +275,7 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message("仲冇任何記錄（bot 啱啱重啟？）。", ephemeral=True)
             return
 
-        logs = list(self.recent_logs)[-count:][::-1]  # 最新排最上
+        logs = list(self.recent_logs)[-count:][::-1]
 
         embed = discord.Embed(
             title=f"📜 最近 {len(logs)} 條指令記錄（新→舊）",
@@ -292,6 +309,14 @@ class AdminCog(commands.Cog):
 
         if user.id == interaction.user.id:
             await interaction.response.send_message("😂 唔可以封鎖你自己喎。", ephemeral=True)
+            return
+
+        # 🛡️ 超級管理員封鎖唔到
+        if user.id in self.admin_ids:
+            await interaction.response.send_message(
+                "❌ 呢位係超級管理員（.env 設定），封鎖唔到佢。",
+                ephemeral=True
+            )
             return
 
         uid = str(user.id)
@@ -371,7 +396,6 @@ class AdminCog(commands.Cog):
         self.feedback["entries"].append(entry)
         self._save_json(FEEDBACK_FILE, self.feedback)
 
-        # 自動轉發去設定咗嘅 channel（有設定先會轉發）
         cid = self.feedback.get("channel_id")
         if cid:
             channel = self.bot.get_channel(cid)
