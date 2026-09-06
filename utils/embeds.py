@@ -293,6 +293,7 @@ def create_help_embed():
             "`/qr <文字>` - 產生 QR code\n"
             "`/setclass <班別>` - 設定預設班別\n"
             "`/myclass` - 顯示已設定班別\n"
+            "`/feedback <意見>` - 📮 遞交意見（可匿名）\n"
             "`/help` - 顯示此幫助"
         ),
         inline=False
@@ -306,7 +307,13 @@ def create_help_embed():
             "`/stats_commands` - 指令排行\n"
             "`/stats_users` - 活躍用戶排行\n"
             "`/logs` - 最近指令記錄\n"
-            "`/stats_export` - 匯出數據"
+            "`/stats_export` - 匯出數據\n"
+            "`/blacklist_add <@user>` - 封鎖用戶\n"
+            "`/blacklist_remove <@user>` - 解封用戶\n"
+            "`/blacklist_list` - 封鎖名單\n"
+            "`/feedback_list` - 查看意見箱\n"
+            "`/feedback_resolve <編號>` - 標記已處理\n"
+            "`/feedback_setchannel <#channel>` - 意見自動轉發"
         ),
         inline=False
     )
@@ -315,9 +322,8 @@ def create_help_embed():
         name="📝 例子",
         value=(
             "`/timetable 1A` - 查詢1A班今日\n"
-            "`/timetable 1A A` - 查詢1A班Day A\n"
             "`/today 2B` - 查詢2B班今日\n"
-            "`/setclass 1A` - 設定預設班別為1A"
+            "`/feedback 個bot好好用!` - 遞交匿名意見"
         ),
         inline=False
     )
