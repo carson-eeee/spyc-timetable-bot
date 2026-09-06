@@ -24,7 +24,8 @@ class SPYCBot(commands.Bot):
     async def setup_hook(self):
         """Load cogs and sync commands"""
         await self.load_extension("cogs.timetable_cog")
-        await self.load_extension("cogs.qr_cog")   # ⬅ 新加呢行
+        await self.load_extension("cogs.qr_cog")
+        await self.load_extension("cogs.admin_cog")   # ⬅ 新加呢行
 
         # Sync slash commands
         try:
@@ -39,7 +40,6 @@ class SPYCBot(commands.Bot):
         print(f"📊 Connected to {len(self.guilds)} servers")
         print("=" * 50)
 
-        # Set activity
         activity = discord.Activity(
             type=discord.ActivityType.watching,
             name="SPYC 時間表 | /help"
@@ -47,11 +47,9 @@ class SPYCBot(commands.Bot):
         await self.change_presence(activity=activity)
 
     async def on_guild_join(self, guild):
-        """Called when bot joins a new server"""
         print(f"➕ Joined new server: {guild.name} (ID: {guild.id})")
 
     async def on_error(self, event, *args, **kwargs):
-        """Handle errors"""
         print(f"❌ Error in {event}: {args} {kwargs}")
 
 async def main():

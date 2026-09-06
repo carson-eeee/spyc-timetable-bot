@@ -281,7 +281,7 @@ def create_help_embed():
         description="幫你快速查詢沙田培英書院時間表！",
         color=discord.Color.purple()
     )
-
+    
     embed.add_field(
         name="📌 Slash Commands",
         value=(
@@ -297,7 +297,20 @@ def create_help_embed():
         ),
         inline=False
     )
-
+    
+    embed.add_field(
+        name="🛡️ 管理員指令",
+        value=(
+            "`/stats` - 使用統計總覽\n"
+            "`/stats_daily` - 每日用量走勢\n"
+            "`/stats_commands` - 指令排行\n"
+            "`/stats_users` - 活躍用戶排行\n"
+            "`/logs` - 最近指令記錄\n"
+            "`/stats_export` - 匯出數據"
+        ),
+        inline=False
+    )
+    
     embed.add_field(
         name="📝 例子",
         value=(
@@ -308,6 +321,6 @@ def create_help_embed():
         ),
         inline=False
     )
-
+    
     embed.set_footer(text="Made with ❤️ for SPYC students")
     return embed
