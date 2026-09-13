@@ -319,6 +319,7 @@ def create_help_embed():
         name="🤖 AI & 其他",
         value=(
             "`/ask <問題>` - 問 AI 助手\n"
+            "`/aimodels` - 📋 查看 AI 模型狀態\n"
             "`/qr <文字>` - 產生 QR code\n"
             "`/avatar [用戶]` - 查看頭像\n"
             "`/userinfo [用戶]` / `/serverinfo` - 用戶/伺服器資料"

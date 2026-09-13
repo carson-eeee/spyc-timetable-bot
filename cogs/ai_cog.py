@@ -5,7 +5,10 @@ import discord  # type: ignore[reportMissingImports]
 from discord import app_commands
 from discord.ext import commands
 
-from utils.ai import ask_ai, gemini_available, nim_available, default_provider
+from utils.ai import (
+    ask_ai, gemini_available, nim_available, default_provider,
+    fetch_nim_models, current_nim_model,
+)
 
 MAX_PER_HOUR = 10   # 每人每鐘頭問幾多次
 
@@ -34,11 +37,13 @@ class AICog(commands.Cog):
         self.asks[uid] = lst
         return 0
 
+    # ==================== /ask ====================
+
     @app_commands.command(name="ask", description="🤖 問 AI 助手 (Gemini / NVIDIA NIM)")
     @app_commands.describe(
         question="你想問嘅問題",
         provider="AI 引擎 (預設: 自動)",
-        model="自訂模型名 (進階，留空=預設)",
+        model="自訂模型名 (NIM 唔啱用會自動轉模型)",
     )
     @app_commands.choices(provider=[
         app_commands.Choice(name="自動 (有咩用咩)", value="auto"),
@@ -100,6 +105,14 @@ class AICog(commands.Cog):
             return
         elapsed = time.time() - start
 
+        # 🔄 偵測有冇自動轉咗模型
+        note = ""
+        if model:
+            actual = model_label.split(" · ", 1)[-1]
+            if actual != model:
+                note = (f"\n\nℹ️ 你揀嘅 `{model}` 已唔再提供服務，"
+                        f"已自動改用 `{actual}`。用 `/aimodels` 睇晒可用模型。")
+
         # 起 embed
         embed = discord.Embed(color=discord.Color.green())
         embed.set_author(
@@ -107,11 +120,79 @@ class AICog(commands.Cog):
             icon_url=interaction.user.display_avatar.url if hasattr(interaction.user, "display_avatar") else None
         )
         q = question if len(question) <= 150 else question[:150] + "..."
-        embed.description = f"💬 **{q}**\n\n{answer[:3800]}"
+        embed.description = f"💬 **{q}**{note}\n\n{answer[:3600]}"
 
         prov_emoji = "✨" if prov == "gemini" else "🟩"
         embed.set_footer(
             text=f"{prov_emoji} {model_label} · {elapsed:.1f}s · 每小時限 {MAX_PER_HOUR} 次"
+        )
+        await interaction.followup.send(embed=embed)
+
+    # ==================== /aimodels ====================
+
+    @app_commands.command(name="aimodels", description="📋 查看 AI 引擎狀態同 NIM 可用模型")
+    @app_commands.describe(refresh="強制重新整理 NIM 模型列表 (預設: 用 cache)")
+    async def slash_aimodels(self, interaction: discord.Interaction, refresh: bool = False):
+        await interaction.response.defer()
+
+        embed = discord.Embed(title="📋 AI 引擎狀態", color=discord.Color.blurple())
+
+        # 引擎狀態
+        gem = "✅ 已設定" if gemini_available() else "❌ 未設定"
+        nim = "✅ 已設定" if nim_available() else "❌ 未設定"
+        prov = default_provider() or "無"
+        embed.add_field(
+            name="🔌 引擎",
+            value=(
+                f"✨ Google Gemini：{gem}\n"
+                f"🟩 NVIDIA NIM：{nim}\n"
+                f"🎯 目前優先使用：`{prov}`"
+            ),
+            inline=False
+        )
+
+        # NIM 模型列表
+        if nim_available():
+            models = await asyncio.to_thread(fetch_nim_models, refresh)
+            using = current_nim_model() or "（未用過）"
+
+            if models:
+                # 標記而家用緊嗰個
+                shown = []
+                for m in models[:40]:
+                    mark = "🟢 " if m == using else "• "
+                    shown.append(f"{mark}`{m}`")
+                extra = "" if len(models) <= 40 else f"\n…仲有 {len(models) - 40} 個"
+                embed.add_field(
+                    name=f"🟩 NVIDIA NIM 模型（{len(models)} 個可用）",
+                    value="\n".join(shown)[:1020] + extra,
+                    inline=False
+                )
+                embed.add_field(
+                    name="🎯 而家用緊",
+                    value=f"`{using}`\n"
+                          f"模型唔再提供服務嗰陣，bot 會自動轉用其他模型。"
+                          f"想指定模型：`/ask model:模型名`",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="🟩 NVIDIA NIM 模型",
+                    value="⚠️ 暫時攞唔到模型列表，用緊預設模型。\n"
+                          "試 `/aimodels refresh: True` 強制重新整理。",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="🟩 NVIDIA NIM",
+                value="未設定 `NIM_API_KEY`，想用 NIM 就叫 bot 擁有者去 `.env` 加 key。\n"
+                      "免費 key 申請：build.nvidia.com",
+                inline=False
+            )
+
+        embed.set_footer(
+            text="NIM 模型列表每小時自動更新 · 🟢 = 而家用緊",
+            icon_url=interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
         )
         await interaction.followup.send(embed=embed)
 
