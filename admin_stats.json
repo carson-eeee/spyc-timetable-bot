@@ -1,0 +1,21 @@
+{
+  "total": 11,
+  "daily": {
+    "2026-09-13": 11
+  },
+  "commands": {
+    "help": 2,
+    "avatar": 1,
+    "userinfo": 1,
+    "timetable": 5,
+    "ask": 1,
+    "weather": 1
+  },
+  "users": {
+    "931848512633700384": {
+      "name": "60901161",
+      "uses": 11,
+      "last": "13/09/2026 11:04"
+    }
+  }
+}

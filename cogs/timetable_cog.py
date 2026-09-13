@@ -8,21 +8,31 @@ import os
 from utils.api import SPYCAPI, _fmt_date
 from utils.embeds import (
     create_timetable_embed, create_events_embed, create_help_embed,
-    maybe_add_dse, dse_days_left, DSE_EXAM_DATE,
+    maybe_add_dse, dse_days_left, DSE_EXAM_DATE, _build_events_text,
 )
+from utils.weather import get_summary
+from utils.render import render_timetable
 
 USER_DATA_FILE = "user_data.json"
+
+# ⭐ 文字排第一 = 預設；圖片照樣揀得，但唔係 default
+STYLE_CHOICES = [
+    app_commands.Choice(name="📝 文字", value="text"),
+    app_commands.Choice(name="🖼️ 圖片", value="image"),
+]
+
 
 # ============================================================
 # 導航按鈕 View
 # ============================================================
 class TimetableView(discord.ui.View):
-    def __init__(self, api, class_name, current_date, user):
+    def __init__(self, api, class_name, current_date, user, image=False):
         super().__init__(timeout=180)  # 3分鐘後過期
         self.api = api
         self.class_name = class_name
         self.current_date = current_date
         self.user = user
+        self.image = image
 
     def _update_buttons(self):
         """更新按鈕顯示日期"""
@@ -55,8 +65,6 @@ class TimetableView(discord.ui.View):
 
     async def _update_message(self, interaction):
         """更新訊息內容"""
-        # 🔧 FIX：一定要「先」更新按鈕日期，之後先 edit message！
-        # （之前係 edit 完先 update，所以個日期 label 永遠慢一日）
         self._update_buttons()
 
         date_str = _fmt_date(self.current_date)
@@ -64,39 +72,69 @@ class TimetableView(discord.ui.View):
 
         if not events_data:
             await interaction.edit_original_response(
-                content=f"❌ 搵唔到 {date_str} 嘅數據。",
-                embed=None,
-                view=self
-            )
+                content=f"❌ 搵唔到 {date_str} 嘅數據。", embed=None, view=self)
             return
 
+        icon_url = self.user.display_avatar.url if hasattr(self.user, 'display_avatar') else None
         cycle_day = events_data.get("cycleDay", "")
         if not cycle_day:
-            # 冇課（假期/周末）
             embed = discord.Embed(
                 title=f"📅 Timetable for {self.class_name}",
                 description=f"**{self.current_date.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
                 color=discord.Color.dark_grey()
             )
-            icon_url = self.user.display_avatar.url if hasattr(self.user, 'display_avatar') else None
             embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
             embed.set_footer(text=f"Requested by {self.user.display_name}", icon_url=icon_url)
             maybe_add_dse(embed, self.class_name)
-
             await interaction.edit_original_response(content=None, embed=embed, view=self)
             return
 
         day = cycle_day.replace("Day ", "").strip()
         lessons = await self.api.get_class_timetable(self.class_name, day)
 
-        embed = create_timetable_embed(
-            self.class_name, lessons,
-            events_data=events_data,
-            user=self.user,
-            date_obj=self.current_date
-        )
+        # 🌤️ 天氣
+        weather_text = None
+        weather_plain = ""
+        weather_level = None
+        try:
+            w = await get_summary()
+            weather_level = w["level"]
+            weather_text = w["line"] if w["level"] == "OK" else f"{w['line']}\n{w['emoji']} **{w['title']}** — {w['detail']}"
+            weather_plain = f"{w['plain']} · {w['title']}"
+        except Exception:
+            pass
 
-        await interaction.edit_original_response(content=None, embed=embed, view=self)
+        if self.image:
+            buf = render_timetable(
+                self.class_name, lessons,
+                date_str=self.current_date.strftime("%a, %d %b %Y"),
+                day_label=day,
+                weather_text=weather_plain,
+                events_text=_build_events_text(events_data),
+                user_name=self.user.display_name if hasattr(self.user, "display_name") else str(self.user),
+            )
+            embed = discord.Embed(color=discord.Color.dark_grey())
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.description = f"**{self.current_date.strftime('%a, %d %b %Y')} (Day {day})**"
+            if weather_text:
+                embed.description += f"\n\n{weather_text}"
+            maybe_add_dse(embed, self.class_name)
+            embed.set_image(url="attachment://timetable.png")
+            embed.set_footer(text=f"Requested by {self.user.display_name}", icon_url=icon_url)
+            await interaction.edit_original_response(
+                content=None, embed=embed, view=self,
+                attachments=[discord.File(buf, filename="timetable.png")]
+            )
+        else:
+            embed = create_timetable_embed(
+                self.class_name, lessons,
+                events_data=events_data,
+                user=self.user,
+                date_obj=self.current_date,
+                weather_text=weather_text,
+                weather_level=weather_level,
+            )
+            await interaction.edit_original_response(content=None, embed=embed, view=self)
 
 
 class TimetableCog(commands.Cog):
@@ -121,6 +159,10 @@ class TimetableCog(commands.Cog):
     def _get_user_class(self, user_id):
         return self.user_data.get(str(user_id), {}).get("class", None)
 
+    def _get_user_style(self, user_id):
+        """⭐ 文字係預設；user 用 /setclass 揀過就用返佢嗰個"""
+        return self.user_data.get(str(user_id), {}).get("style", "text")
+
     async def cog_unload(self):
         await self.api.close()
 
@@ -129,10 +171,17 @@ class TimetableCog(commands.Cog):
     @app_commands.command(name="timetable", description="查詢時間表")
     @app_commands.describe(
         class_name="班別 (例如: 1A, 2B)",
-        day="星期幾 (A/B/C/D/E，留空=今日)"
+        day="星期幾 (A/B/C/D/E，留空=今日)",
+        style="顯示方式 (留空=你嘅個人預設)",
     )
-    async def slash_timetable(self, interaction: discord.Interaction, class_name: str, day: str = None):
+    @app_commands.choices(style=STYLE_CHOICES)
+    async def slash_timetable(self, interaction: discord.Interaction, class_name: str,
+                              day: str = None, style: app_commands.Choice[str] = None):
         await interaction.response.defer()
+
+        # ⭐ 揀顯示方式：指令參數 > 個人預設 > text
+        chosen = style.value if style else self._get_user_style(interaction.user.id)
+        use_image = (chosen == "image")
 
         class_name = class_name.upper()
         timetable = await self.api.fetch_timetable()
@@ -155,53 +204,121 @@ class TimetableCog(commands.Cog):
                 return
 
             lessons = timetable[class_name][day]
-            embed = create_timetable_embed(class_name, lessons, user=interaction.user)
-            await interaction.followup.send(embed=embed)
-        else:
-            # 冇指定 Day，顯示今日 + 按鈕
-            today = datetime.now()
-            date_str = _fmt_date(today)
-            events_data = await self.api.get_date_info(date_str)
 
-            if not events_data:
-                await interaction.followup.send("❌ 無法獲取今日資訊。")
-                return
-
-            cycle_day = events_data.get("cycleDay", "")
-            if not cycle_day:
-                embed = discord.Embed(
-                    title=f"📅 Timetable for {class_name}",
-                    description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
-                    color=discord.Color.dark_grey()
+            if use_image:
+                try:
+                    w = await get_summary()
+                    weather_plain = f"{w['plain']} · {w['title']}"
+                except Exception:
+                    weather_plain = ""
+                buf = render_timetable(
+                    class_name, lessons,
+                    date_str=f"Day {day}",
+                    day_label=day,
+                    weather_text=weather_plain,
+                    user_name=interaction.user.display_name,
                 )
+                embed = discord.Embed(title=f"📅 Timetable for {class_name}",
+                                      color=discord.Color.dark_grey())
                 icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
                 embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
-                embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
-                maybe_add_dse(embed, class_name)
+                embed.set_image(url="attachment://timetable.png")
+                embed.set_footer(text=f"Requested by {interaction.user.display_name}",
+                                 icon_url=icon_url)
+                await interaction.followup.send(
+                    embed=embed, file=discord.File(buf, filename="timetable.png"))
+            else:
+                embed = create_timetable_embed(class_name, lessons, user=interaction.user)
+                await interaction.followup.send(embed=embed)
+            return
 
-                view = TimetableView(self.api, class_name, today, interaction.user)
-                view._update_buttons()
-                await interaction.followup.send(embed=embed, view=view)
-                return
+        # 冇指定 Day：顯示今日 + 按鈕
+        today = datetime.now()
+        date_str = _fmt_date(today)
+        events_data = await self.api.get_date_info(date_str)
 
-            day = cycle_day.replace("Day ", "").strip()
-            lessons = await self.api.get_class_timetable(class_name, day)
+        if not events_data:
+            await interaction.followup.send("❌ 無法獲取今日資訊。")
+            return
 
+        cycle_day = events_data.get("cycleDay", "")
+        icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+
+        if not cycle_day:
+            embed = discord.Embed(
+                title=f"📅 Timetable for {class_name}",
+                description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
+                color=discord.Color.dark_grey()
+            )
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+            maybe_add_dse(embed, class_name)
+            view = TimetableView(self.api, class_name, today, interaction.user, image=use_image)
+            view._update_buttons()
+            await interaction.followup.send(embed=embed, view=view)
+            return
+
+        day = cycle_day.replace("Day ", "").strip()
+        lessons = await self.api.get_class_timetable(class_name, day)
+
+        # 🌤️ 天氣
+        weather_text = None
+        weather_plain = ""
+        weather_level = None
+        try:
+            w = await get_summary()
+            weather_level = w["level"]
+            weather_text = w["line"] if w["level"] == "OK" else f"{w['line']}\n{w['emoji']} **{w['title']}** — {w['detail']}"
+            weather_plain = f"{w['plain']} · {w['title']}"
+        except Exception:
+            pass
+
+        if use_image:
+            buf = render_timetable(
+                class_name, lessons,
+                date_str=today.strftime("%a, %d %b %Y"),
+                day_label=day,
+                weather_text=weather_plain,
+                events_text=_build_events_text(events_data),
+                user_name=interaction.user.display_name,
+            )
+            embed = discord.Embed(color=discord.Color.dark_grey())
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.description = f"**{today.strftime('%a, %d %b %Y')} (Day {day})**"
+            if weather_text:
+                embed.description += f"\n\n{weather_text}"
+            maybe_add_dse(embed, class_name)
+            embed.set_image(url="attachment://timetable.png")
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+            view = TimetableView(self.api, class_name, today, interaction.user, image=True)
+            view._update_buttons()
+            await interaction.followup.send(
+                embed=embed, file=discord.File(buf, filename="timetable.png"), view=view)
+        else:
             embed = create_timetable_embed(
                 class_name, lessons,
                 events_data=events_data,
                 user=interaction.user,
-                date_obj=today
+                date_obj=today,
+                weather_text=weather_text,
+                weather_level=weather_level,
             )
-
-            view = TimetableView(self.api, class_name, today, interaction.user)
+            view = TimetableView(self.api, class_name, today, interaction.user, image=False)
             view._update_buttons()
             await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="today", description="查詢今日時間表+活動")
-    @app_commands.describe(class_name="班別 (例如: 1A, 2B，留空用預設)")
-    async def slash_today(self, interaction: discord.Interaction, class_name: str = None):
+    @app_commands.describe(
+        class_name="班別 (例如: 1A, 2B，留空用預設)",
+        style="顯示方式 (留空=你嘅個人預設)",
+    )
+    @app_commands.choices(style=STYLE_CHOICES)
+    async def slash_today(self, interaction: discord.Interaction,
+                          class_name: str = None, style: app_commands.Choice[str] = None):
         await interaction.response.defer()
+
+        chosen = style.value if style else self._get_user_style(interaction.user.id)
+        use_image = (chosen == "image")
 
         if class_name is None:
             class_name = self._get_user_class(interaction.user.id)
@@ -219,18 +336,18 @@ class TimetableCog(commands.Cog):
             return
 
         cycle_day = events_data.get("cycleDay", "")
+        icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
+
         if not cycle_day:
             embed = discord.Embed(
                 title=f"📅 Timetable for {class_name}",
                 description=f"**{today.strftime('%a, %d %b %Y')}**\n\n🏖️ 今日冇課（假期 / 周末）",
                 color=discord.Color.dark_grey()
             )
-            icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
             embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
             embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
             maybe_add_dse(embed, class_name)
-
-            view = TimetableView(self.api, class_name, today, interaction.user)
+            view = TimetableView(self.api, class_name, today, interaction.user, image=use_image)
             view._update_buttons()
             await interaction.followup.send(embed=embed, view=view)
             return
@@ -238,16 +355,50 @@ class TimetableCog(commands.Cog):
         day = cycle_day.replace("Day ", "").strip()
         lessons = await self.api.get_class_timetable(class_name, day)
 
-        embed = create_timetable_embed(
-            class_name, lessons,
-            events_data=events_data,
-            user=interaction.user,
-            date_obj=today
-        )
+        weather_text = None
+        weather_plain = ""
+        weather_level = None
+        try:
+            w = await get_summary()
+            weather_level = w["level"]
+            weather_text = w["line"] if w["level"] == "OK" else f"{w['line']}\n{w['emoji']} **{w['title']}** — {w['detail']}"
+            weather_plain = f"{w['plain']} · {w['title']}"
+        except Exception:
+            pass
 
-        view = TimetableView(self.api, class_name, today, interaction.user)
-        view._update_buttons()
-        await interaction.followup.send(embed=embed, view=view)
+        if use_image:
+            buf = render_timetable(
+                class_name, lessons,
+                date_str=today.strftime("%a, %d %b %Y"),
+                day_label=day,
+                weather_text=weather_plain,
+                events_text=_build_events_text(events_data),
+                user_name=interaction.user.display_name,
+            )
+            embed = discord.Embed(color=discord.Color.dark_grey())
+            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
+            embed.description = f"**{today.strftime('%a, %d %b %Y')} (Day {day})**"
+            if weather_text:
+                embed.description += f"\n\n{weather_text}"
+            maybe_add_dse(embed, class_name)
+            embed.set_image(url="attachment://timetable.png")
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
+            view = TimetableView(self.api, class_name, today, interaction.user, image=True)
+            view._update_buttons()
+            await interaction.followup.send(
+                embed=embed, file=discord.File(buf, filename="timetable.png"), view=view)
+        else:
+            embed = create_timetable_embed(
+                class_name, lessons,
+                events_data=events_data,
+                user=interaction.user,
+                date_obj=today,
+                weather_text=weather_text,
+                weather_level=weather_level,
+            )
+            view = TimetableView(self.api, class_name, today, interaction.user, image=False)
+            view._update_buttons()
+            await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="events", description="查詢學校活動")
     @app_commands.describe(date="日期 (格式: D/M/YYYY，留空=今日)")
@@ -298,9 +449,14 @@ class TimetableCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setclass", description="設定預設班別")
-    @app_commands.describe(class_name="班別 (例如: 1A, 2B)")
-    async def slash_setclass(self, interaction: discord.Interaction, class_name: str):
+    @app_commands.command(name="setclass", description="設定預設班別＋顯示方式")
+    @app_commands.describe(
+        class_name="班別 (例如: 1A, 2B)",
+        style="時間表顯示方式 (預設: 文字)",
+    )
+    @app_commands.choices(style=STYLE_CHOICES)
+    async def slash_setclass(self, interaction: discord.Interaction, class_name: str,
+                            style: app_commands.Choice[str] = None):
         class_name = class_name.upper()
 
         timetable = await self.api.fetch_timetable()
@@ -309,19 +465,33 @@ class TimetableCog(commands.Cog):
             await interaction.response.send_message(f"❌ 搵唔到 `{class_name}` 班。可用班別: {classes}")
             return
 
-        user_id = str(interaction.user.id)
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        self.user_data[user_id]["class"] = class_name
+        uid = str(interaction.user.id)
+        if uid not in self.user_data:
+            self.user_data[uid] = {}
+        self.user_data[uid]["class"] = class_name
+
+        if style is not None:
+            self.user_data[uid]["style"] = style.value
+        else:
+            self.user_data[uid].setdefault("style", "text")
+
         self._save_user_data()
 
-        await interaction.response.send_message(f"✅ 已設定你嘅預設班別為 `{class_name}`！")
+        style_label = "🖼️ 圖片" if self.user_data[uid]["style"] == "image" else "📝 文字"
+        await interaction.response.send_message(
+            f"✅ 已設定：班別 `{class_name}` · 顯示方式 {style_label}"
+        )
 
     @app_commands.command(name="myclass", description="顯示已設定嘅班別")
     async def slash_myclass(self, interaction: discord.Interaction):
-        user_class = self._get_user_class(interaction.user.id)
+        info = self.user_data.get(str(interaction.user.id), {})
+        user_class = info.get("class")
         if user_class:
-            await interaction.response.send_message(f"📚 你嘅預設班別係 `{user_class}`。")
+            style_label = "🖼️ 圖片" if info.get("style", "text") == "image" else "📝 文字"
+            await interaction.response.send_message(
+                f"📚 你嘅預設班別係 `{user_class}`，顯示方式：{style_label}。\n"
+                f"想轉？用 `/setclass <班別> style:` 或者 `/timetable style:`。"
+            )
         else:
             await interaction.response.send_message("❌ 你仲未設定班別，用 `/setclass <班別>` 設定。")
 

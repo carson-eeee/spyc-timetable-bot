@@ -28,7 +28,6 @@ BREAK_BEFORE = {
 # ============================================================
 # 🎯 DSE 倒數設定
 # DSE 2027 筆試：2027年4月8日 中國語文科率先開考
-# （改日子就改呢一行：datetime(年, 月, 日)）
 # ============================================================
 DSE_EXAM_DATE = datetime(2027, 4, 8)
 
@@ -187,9 +186,17 @@ def _build_events_text(events_data):
 # ============================================================
 # Embed builders
 # ============================================================
-def create_timetable_embed(class_name, lessons, events_data=None, user=None, date_obj=None):
+def create_timetable_embed(class_name, lessons, events_data=None, user=None,
+                           date_obj=None, weather_text=None, weather_level=None):
     """Create timetable embed matching Siu Ying v2 style"""
-    embed = discord.Embed(color=discord.Color.dark_grey())
+    # 🌤️ 停課=紅 / 留意=金 / 正常=深灰
+    if weather_level == "STOP":
+        color = discord.Color.red()
+    elif weather_level == "CAUTION":
+        color = discord.Color.gold()
+    else:
+        color = discord.Color.dark_grey()
+    embed = discord.Embed(color=color)
 
     icon_url = None
     if user and hasattr(user, 'display_avatar'):
@@ -215,6 +222,10 @@ def create_timetable_embed(class_name, lessons, events_data=None, user=None, dat
         embed.description += schedule
     else:
         embed.description += "❌ 搵唔到時間表數據"
+
+    # 🌤️ 天氣（新加）
+    if weather_text:
+        embed.description += f"\n\n{weather_text}"
 
     # 🎯 S6 班自動加 DSE 倒數
     maybe_add_dse(embed, class_name)
@@ -283,47 +294,45 @@ def create_help_embed():
     )
     
     embed.add_field(
-        name="📌 Slash Commands",
+        name="📅 時間表",
         value=(
-            "`/timetable <班別>` - 查詢今日時間表\n"
-            "`/timetable <班別> <Day>` - 查詢指定日時間表\n"
-            "`/today [班別]` - 查詢今日時間表+活動\n"
+            "`/timetable <班別> [Day] [style]` - 查詢時間表\n"
+            "`/today [班別] [style]` - 今日時間表+活動\n"
             "`/events [日期]` - 查詢學校活動\n"
-            "`/dse` - DSE 倒數\n"
+            "`/dse` - DSE 倒數"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🌤️ 天氣",
+        value=(
+            "`/weather` - 現時天氣＋返學狀態\n"
+            "`/hourly [小時]` - ⏰ 沙田逐小時預報\n"
+            "`/forecast` - 📆 九日預報\n"
+            "`/school` - 而家使唔使返學？"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🤖 AI & 其他",
+        value=(
+            "`/ask <問題>` - 問 AI 助手\n"
             "`/qr <文字>` - 產生 QR code\n"
-            "`/setclass <班別>` - 設定預設班別\n"
-            "`/myclass` - 顯示已設定班別\n"
-            "`/feedback <意見>` - 📮 遞交意見（可匿名）\n"
+            "`/avatar [用戶]` - 查看頭像\n"
+            "`/userinfo [用戶]` / `/serverinfo` - 用戶/伺服器資料"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⚙️ 設定 & 意見",
+        value=(
+            "`/setclass <班別> [style]` - 設定班別＋顯示方式\n"
+            "`/myclass` - 顯示設定\n"
+            "`/feedback <意見>` - 📮 匿名意見箱\n"
             "`/help` - 顯示此幫助"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🛡️ 管理員指令",
-        value=(
-            "`/stats` - 使用統計總覽\n"
-            "`/stats_daily` - 每日用量走勢\n"
-            "`/stats_commands` - 指令排行\n"
-            "`/stats_users` - 活躍用戶排行\n"
-            "`/logs` - 最近指令記錄\n"
-            "`/stats_export` - 匯出數據\n"
-            "`/blacklist_add <@user>` - 封鎖用戶\n"
-            "`/blacklist_remove <@user>` - 解封用戶\n"
-            "`/blacklist_list` - 封鎖名單\n"
-            "`/feedback_list` - 查看意見箱\n"
-            "`/feedback_resolve <編號>` - 標記已處理\n"
-            "`/feedback_setchannel <#channel>` - 意見自動轉發"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📝 例子",
-        value=(
-            "`/timetable 1A` - 查詢1A班今日\n"
-            "`/today 2B` - 查詢2B班今日\n"
-            "`/feedback 個bot好好用!` - 遞交匿名意見"
         ),
         inline=False
     )

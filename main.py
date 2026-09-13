@@ -16,7 +16,6 @@ class SPYCBot(commands.Bot):
         intents.message_content = True
         intents.members = True
 
-        # 🔧 FIX 1: application_id 一定要係 int（.env 讀出嚟係 string）
         app_id = None
         if APPLICATION_ID and APPLICATION_ID.strip().isdigit():
             app_id = int(APPLICATION_ID.strip())
@@ -33,8 +32,10 @@ class SPYCBot(commands.Bot):
         await self.load_extension("cogs.timetable_cog")
         await self.load_extension("cogs.qr_cog")
         await self.load_extension("cogs.admin_cog")
+        await self.load_extension("cogs.weather_cog")
+        await self.load_extension("cogs.info_cog")
+        await self.load_extension("cogs.ai_cog")   # 🤖 新加
 
-        # Sync slash commands（GLOBAL only，唔好加 guild 參數！）
         try:
             synced = await self.tree.sync()
             print(f"✅ Synced {len(synced)} global slash commands")
@@ -42,12 +43,7 @@ class SPYCBot(commands.Bot):
             print(f"❌ Failed to sync commands: {e}")
 
     async def on_ready(self):
-        # ============================================================
-        # 🔧 FIX 2: 一次性清除每個 server 殘留嘅 guild-scoped 指令
-        # 呢啲就係「指令 doubled」嘅元兇：
-        # 以前 sync 過落指定 guild 嘅指令會一直留喺 Discord，
-        # global sync 係清唔走佢哋嘅，所以同一個指令會出現兩次。
-        # ============================================================
+        # 🧹 一次性清除每個 server 殘留嘅 guild-scoped 指令（防指令 doubled）
         if not self._dedup_done:
             self._dedup_done = True
             for guild in self.guilds:
@@ -69,7 +65,6 @@ class SPYCBot(commands.Bot):
         await self.change_presence(activity=activity)
 
     async def on_guild_join(self, guild):
-        # 新加入嘅 server 都順手清一次，防止舊 guild 指令跟埋嚟
         try:
             self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
