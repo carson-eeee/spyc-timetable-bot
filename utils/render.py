@@ -1,219 +1,253 @@
+"""Pillow renderer for the SPYC timetable card.
+
+The output is a fixed 900x1000 RGBA PNG that mirrors the SVG timetable card.
+It is returned as an in-memory stream so callers can send it as a raw
+Discord attachment (no embed required).
+"""
+
+from __future__ import annotations
+
 import io
-import hashlib
+from functools import lru_cache
+from pathlib import Path
+
 from PIL import Image, ImageDraw, ImageFont
 
-from utils.embeds import (
-    TIME_SLOTS, BREAK_BEFORE, _slot_time,
-    _extract_elective_groups, _fmt_subject, _fmt_venue,
-    _build_events_text, _dse_countdown_text,
-)
+from utils.embeds import TIME_SLOTS, _fmt_subject, _fmt_venue, _slot_time
 
-# ---------- 顏色（Discord dark theme）----------
-BG       = (23, 25, 28)
-PANEL    = (36, 38, 43)
-CARD     = (44, 47, 54)
-ACCENT   = (114, 137, 218)
-TEXT     = (240, 242, 245)
-SUBTLE   = (168, 172, 178)
-BREAK_BG = (52, 56, 66)
-BORDER   = (58, 62, 72)
+W, H = 900, 1000
 
-PALETTE = [
-    (88, 101, 242), (235, 69, 158), (255, 159, 64),
-    (26, 188, 156), (46, 204, 113), (241, 196, 15),
-    (155, 89, 182), (52, 152, 219), (231, 76, 60),
-    (127, 140, 141),
-]
+BG = (37, 37, 37, 255)
+PANEL = (255, 255, 255, 255)
+HEADER = (116, 127, 195, 255)
+BREAK = (136, 139, 151, 255)
+ROW = (151, 157, 186, 255)
+ROW_LEFT = (172, 180, 224, 255)
+WHITE = (255, 255, 255, 255)
+BLACK = (0, 0, 0, 255)
+SESSION = (31, 31, 31, 255)
+VENUE = (243, 251, 255, 255)
 
-# Windows / Linux 中文字體
-FONTS = [
-    "C:/Windows/Fonts/msyh.ttc",      # 微軟雅黑
-    "C:/Windows/Fonts/msjh.ttc",      # 微軟正黑
-    "C:/Windows/Fonts/arialuni.ttf",  # Arial Unicode
+ROW_YS = (220, 290, 360, 480, 550, 620, 740, 810)
+BREAK_YS = (170, 430, 690)
+
+FONT_FILE = Path(__file__).resolve().parent.parent / "assets" / "GoogleSansFlex.ttf"
+
+# CJK fallback fonts, in the same order used by the old renderer.
+CJK_FONTS = (
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msjh.ttc",
+    "C:/Windows/Fonts/arialuni.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-]
+)
 
 
-def _font(size):
-    for p in FONTS:
+@lru_cache(maxsize=128)
+def _latin_font(size: int, weight: int = 500) -> ImageFont.FreeTypeFont:
+    """Google Sans Flex at the card's weight, or a CJK font as fallback."""
+    try:
+        font = ImageFont.truetype(str(FONT_FILE), size)
         try:
-            return ImageFont.truetype(p, size)
+            # Axis order: optical size, width, weight, roundness, slant.
+            font.set_variation_by_axes([18, 100, weight, 0, 0])
+        except Exception:
+            pass
+        return font
+    except Exception:
+        return _cjk_font(size)
+
+
+@lru_cache(maxsize=128)
+def _cjk_font(size: int) -> ImageFont.FreeTypeFont:
+    for path in CJK_FONTS:
+        try:
+            return ImageFont.truetype(path, size)
         except Exception:
             continue
     return ImageFont.load_default()
 
 
-def _fit(draw, text, size, max_w, min_size=18):
-    """字太大就自動縮細到啱位"""
-    f = _font(size)
-    while size > min_size and draw.textlength(text, font=f) > max_w:
-        size -= 1
-        f = _font(size)
-    return f
-
-
-def _trunc(draw, text, font, max_w):
-    """縮到最細都放唔落就刪字加 …"""
-    if draw.textlength(text, font=font) <= max_w:
-        return text
-    while text and draw.textlength(text + "…", font=font) > max_w:
-        text = text[:-1]
-    return text + "…"
-
-
-def _subj_color(s):
-    h = hashlib.md5(s.encode("utf-8")).hexdigest()
-    return PALETTE[int(h[:2], 16) % len(PALETTE)]
-
-
-def render_timetable(class_name, lessons, date_str, day_label,
-                     weather_text="", events_text="", user_name=""):
-    """畫時間表 PNG（大字清晰版），return io.BytesIO"""
-
-    # ---------- ① 先行計高度（layout pass）----------
-    W = 1300
-    pad = 56
-    head_h = 156
-    row_h, brk_h = 116, 66
-
-    dse_text = (_dse_countdown_text(class_name) or "").replace("**", "")
-
-    ev_lines = []
-    if events_text:
-        ev_lines = [l.replace("**", "").strip()
-                    for l in events_text.split("\n") if l.strip()][:5]
-
-    n_breaks = sum(1 for i in range(1, len(lessons) + 1) if f"L{i}" in BREAK_BEFORE)
-
-    weather_h = 70 if weather_text else 0
-    dse_h = 70 if dse_text else 0
-    ma_h = 60
-    ev_block = (18 + 46 + 36 * len(ev_lines) + 14) if ev_lines else 0
-    footer_h = 64
-
-    H = (pad + head_h + 18 + weather_h + dse_h + 10 + ma_h + 12
-         + row_h * len(lessons) + brk_h * n_breaks
-         + ev_block + footer_h + pad)
-
-    img = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(img)
-
-    # ---------- Header ----------
-    d.rounded_rectangle([pad, pad, W - pad, pad + head_h], 20, fill=PANEL)
-    d.rounded_rectangle([pad, pad, pad + 16, pad + head_h], 8, fill=ACCENT)
-
-    d.text((pad + 44, pad + 26), class_name, font=_font(56), fill=TEXT)
-    d.text((pad + 46, pad + 98), date_str, font=_font(26), fill=SUBTLE)
-
-    # Day 徽章（右上角藍色 pill）
-    if day_label:
-        badge = f"Day {day_label}"
-        f_b = _font(30)
-        bw = d.textlength(badge, font=f_b)
-        bx1 = W - pad - 44 - bw
-        d.rounded_rectangle([bx1 - 22, pad + 30, W - pad - 22, pad + 82], 26, fill=ACCENT)
-        d.text((bx1, pad + 38), badge, font=f_b, fill=(255, 255, 255))
-
-    y = pad + head_h + 18
-
-    # ---------- 天氣 banner ----------
-    if weather_text:
-        d.rounded_rectangle([pad, y, W - pad, y + weather_h - 16], 27, fill=(52, 48, 34))
-        f = _fit(d, weather_text, 27, W - 2 * pad - 56)
-        d.text((pad + 28, y + 16), weather_text, font=f, fill=(255, 222, 120))
-        y += weather_h
-
-    # ---------- DSE banner ----------
-    if dse_text:
-        d.rounded_rectangle([pad, y, W - pad, y + dse_h - 16], 27, fill=(58, 28, 32))
-        f = _fit(d, dse_text, 27, W - 2 * pad - 56)
-        d.text((pad + 28, y + 16), dse_text, font=f, fill=(255, 165, 165))
-        y += dse_h
-
-    y += 10
-
-    # ---------- 早會 ----------
-    ma_time, ma_name = TIME_SLOTS["MA"]
-    d.rounded_rectangle([pad, y, W - pad, y + ma_h - 18], 21, fill=BREAK_BG)
-    label = f"{ma_name}  {ma_time}"
-    f = _font(25)
-    tw = d.textlength(label, font=f)
-    d.text(((W - tw) / 2, y + 10), label, font=f, fill=SUBTLE)
-    y += ma_h + 12
-
-    # ---------- 每一堂 ----------
-    x0 = pad + 150   # 堂卡左邊界（時間列右邊）
-
-    for i, lesson in enumerate(lessons, 1):
-        if f"L{i}" in BREAK_BEFORE:
-            bk = BREAK_BEFORE[f"L{i}"]
-            bt, bn = TIME_SLOTS[bk]
-            emo = "☕" if bk == "BREAK" else "🍱"
-            d.rounded_rectangle([pad + 90, y, W - pad - 90, y + brk_h - 14], 26, fill=BREAK_BG)
-            label = f"{emo} {bn}  {bt}"
-            f = _font(25)
-            tw = d.textlength(label, font=f)
-            d.text(((W - tw) / 2, y + 12), label, font=f, fill=SUBTLE)
-            y += brk_h
-
-        # 時間（左邊）
-        d.text((pad + 6, y + row_h // 2 - 20), _slot_time(i), font=_font(28), fill=SUBTLE)
-
-        # 卡
-        d.rounded_rectangle([x0, y, W - pad, y + row_h - 16], 18,
-                           fill=CARD, outline=BORDER)
-
-        raw = str(lesson.get("subject", "") or "")
-        groups = _extract_elective_groups(raw)
-        card_h = row_h - 16
-
-        if groups:
-            # 選修堂：大隻字顯示組別
-            text = " / ".join(groups)
-            f = _fit(d, text, 36, (W - pad) - (x0 + 44) - 40)
-            d.text((x0 + 44, y + card_h // 2 - 24), text, font=f, fill=TEXT)
+def _runs(text: str) -> list[tuple[str, str]]:
+    """Split text into Latin (ASCII) and non-ASCII runs."""
+    runs: list[tuple[str, str]] = []
+    for char in text:
+        kind = "latin" if char.isascii() else "cjk"
+        if runs and runs[-1][0] == kind:
+            runs[-1] = (kind, runs[-1][1] + char)
         else:
-            subj = _fmt_subject(raw or "N/A")
-            venue = _fmt_venue(lesson.get("venue", "N/A"))
+            runs.append((kind, char))
+    return runs
 
-            # 左邊色條（每科唔同色）
-            color = _subj_color(raw or "?")
-            d.rounded_rectangle([x0 + 1, y + 1, x0 + 15, y + card_h - 1], 8, fill=color)
 
-            # venue（右對齊）
-            f_v = _fit(d, venue, 26, 300)
-            venue = _trunc(d, venue, f_v, 300)
-            vw = d.textlength(venue, font=f_v)
-            d.text((W - pad - 28 - vw, y + card_h // 2 - 16), venue, font=f_v, fill=SUBTLE)
+def _measure(draw: ImageDraw.ImageDraw, runs, fonts) -> float:
+    return sum(draw.textlength(part, font=fonts[kind]) for kind, part in runs)
 
-            # subject（大隻字，避開 venue）
-            max_subj_w = (W - pad - 28 - vw - 24) - (x0 + 44)
-            f_s = _fit(d, subj, 33, max_subj_w)
-            subj = _trunc(d, subj, f_s, max_subj_w)
-            d.text((x0 + 44, y + card_h // 2 - 20), subj, font=f_s, fill=TEXT)
 
-        y += row_h
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    center_x: float,
+    baseline_y: float,
+    size: int,
+    weight: int,
+    fill,
+    max_width: float,
+    min_size: int = 16,
+) -> None:
+    """Centre mixed Latin/CJK text on a baseline, shrinking to fit."""
+    text = str(text or "").replace("\n", " ").strip()
+    if not text:
+        return
 
-    # ---------- Events ----------
-    if ev_lines:
-        y += 18
-        d.text((pad + 8, y), "📌 Events", font=_font(28), fill=(255, 222, 120))
-        y += 46
-        for ln in ev_lines:
-            f = _fit(d, ln, 24, W - 2 * pad - 36)
-            d.text((pad + 16, y), _trunc(d, ln, f, W - 2 * pad - 36), font=f, fill=SUBTLE)
-            y += 36
-        y += 14
+    while True:
+        fonts = {
+            "latin": _latin_font(size, weight),
+            "cjk": _cjk_font(size),
+        }
+        runs = _runs(text)
+        width = _measure(draw, runs, fonts)
+        if width <= max_width or size <= min_size:
+            break
+        size -= 1
 
-    # ---------- Footer ----------
-    ft = f"Requested by {user_name} · SPYC Siu Ying"
-    f = _font(20)
-    fw = d.textlength(ft, font=f)
-    d.text(((W - fw) / 2, H - pad - 30), ft, font=f, fill=SUBTLE)
+    if width > max_width:
+        # Last resort: trim and add ASCII dots (the Latin subset is ASCII-only).
+        while text:
+            text = text[:-1].rstrip()
+            candidate = text + "..." if text else "..."
+            runs = _runs(candidate)
+            width = _measure(draw, runs, fonts)
+            if width <= max_width:
+                text = candidate
+                break
+        else:
+            text = "..."
+            runs = _runs(text)
+            width = _measure(draw, runs, fonts)
+
+    x = center_x - width / 2
+    for kind, part in runs:
+        font = fonts[kind]
+        draw.text((x, baseline_y), part, font=font, fill=fill, anchor="ls")
+        x += draw.textlength(part, font=font)
+
+
+def _header_text(date_str, day_label) -> str:
+    date_text = str(date_str or "").strip()
+    day_text = f"Day {str(day_label).strip()}" if day_label else ""
+    if day_text and date_text.lower().startswith("day "):
+        return date_text
+    if date_text and day_text:
+        return f"{date_text} / {day_text}"
+    return date_text or day_text
+
+
+def _lesson_title(raw) -> str:
+    raw = str(raw or "").strip()
+    if not raw or raw.upper() in {"N/A", "NA", "NONE"}:
+        return ""
+    return _fmt_subject(raw)
+
+
+def _lesson_venue(raw) -> str:
+    raw = str(raw or "").strip()
+    if not raw or raw.upper() in {"N/A", "NA", "NONE"}:
+        return ""
+    return _fmt_venue(raw)
+
+
+def render_timetable(
+    class_name,
+    lessons,
+    date_str,
+    day_label,
+    weather_text="",
+    events_text="",
+    user_name="",
+):
+    """Draw the fixed 8-lesson card and return a seekable PNG stream.
+
+    ``weather_text``, ``events_text`` and ``user_name`` are accepted for
+    compatibility with the previous renderer; the new card does not use them.
+    """
+    lessons = list(lessons or [])
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Outer dark card, then white content panel and header.
+    draw.rounded_rectangle((0, 0, W - 1, H - 1), 32, fill=BG)
+    draw.rounded_rectangle((40, 140, 860, 940), 12, fill=PANEL)
+    draw.rounded_rectangle((40, 40, 635, 120), 12, fill=HEADER)
+    draw.rounded_rectangle((660, 40, 860, 120), 12, fill=PANEL)
+
+    for y in BREAK_YS:
+        draw.rounded_rectangle((70, y, 830, y + 40), 12, fill=BREAK)
+
+    for y in ROW_YS:
+        draw.rounded_rectangle((70, y, 830, y + 60), 12, fill=ROW)
+        draw.rounded_rectangle((70, y, 552, y + 60), 12, fill=ROW_LEFT)
+
+    _draw_text(
+        draw,
+        _header_text(date_str, day_label),
+        337.5,
+        96.7,
+        48,
+        500,
+        WHITE,
+        535,
+        min_size=32,
+    )
+    _draw_text(
+        draw,
+        str(class_name or "").upper(),
+        760,
+        96.0,
+        48,
+        500,
+        BLACK,
+        160,
+        min_size=28,
+    )
+
+    break_labels = (
+        " ".join(TIME_SLOTS["MA"]),
+        " ".join(TIME_SLOTS["BREAK"]),
+        " ".join(TIME_SLOTS["LUNCH"]),
+    )
+    for y, label in zip(BREAK_YS, break_labels):
+        _draw_text(draw, label, 450, y + 28.4, 24, 500, WHITE, 720, min_size=16)
+
+    for index, y in enumerate(ROW_YS):
+        lesson = lessons[index] if index < len(lessons) else {}
+        if isinstance(lesson, dict):
+            raw_subject = lesson.get("subject", "")
+            raw_venue = lesson.get("venue", "")
+        else:
+            raw_subject = ""
+            raw_venue = ""
+
+        title = _lesson_title(raw_subject)
+        venue = _lesson_venue(raw_venue)
+        _draw_text(
+            draw,
+            f"{_slot_time(index + 1)} {title}".strip(),
+            311,
+            y + 44.7,
+            40,
+            500,
+            SESSION,
+            440,
+            min_size=20,
+        )
+        _draw_text(draw, venue, 691, y + 38.4, 24, 500, VENUE, 260, min_size=16)
+
+    _draw_text(draw, "SPYC Siu Ying", 450, 913.4, 24, 400, BLACK, 760, min_size=16)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
+    buf.name = "timetable.png"
     buf.seek(0)
     return buf

@@ -113,16 +113,8 @@ class TimetableView(discord.ui.View):
                 events_text=_build_events_text(events_data),
                 user_name=self.user.display_name if hasattr(self.user, "display_name") else str(self.user),
             )
-            embed = discord.Embed(color=discord.Color.dark_grey())
-            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
-            embed.description = f"**{self.current_date.strftime('%a, %d %b %Y')} (Day {day})**"
-            if weather_text:
-                embed.description += f"\n\n{weather_text}"
-            maybe_add_dse(embed, self.class_name)
-            embed.set_image(url="attachment://timetable.png")
-            embed.set_footer(text=f"Requested by {self.user.display_name}", icon_url=icon_url)
             await interaction.edit_original_response(
-                content=None, embed=embed, view=self,
+                content=None, embed=None, view=self,
                 attachments=[discord.File(buf, filename="timetable.png")]
             )
         else:
@@ -206,27 +198,13 @@ class TimetableCog(commands.Cog):
             lessons = timetable[class_name][day]
 
             if use_image:
-                try:
-                    w = await get_summary()
-                    weather_plain = f"{w['plain']} · {w['title']}"
-                except Exception:
-                    weather_plain = ""
                 buf = render_timetable(
                     class_name, lessons,
                     date_str=f"Day {day}",
                     day_label=day,
-                    weather_text=weather_plain,
-                    user_name=interaction.user.display_name,
                 )
-                embed = discord.Embed(title=f"📅 Timetable for {class_name}",
-                                      color=discord.Color.dark_grey())
-                icon_url = interaction.user.display_avatar.url if hasattr(interaction.user, 'display_avatar') else None
-                embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
-                embed.set_image(url="attachment://timetable.png")
-                embed.set_footer(text=f"Requested by {interaction.user.display_name}",
-                                 icon_url=icon_url)
                 await interaction.followup.send(
-                    embed=embed, file=discord.File(buf, filename="timetable.png"))
+                    file=discord.File(buf, filename="timetable.png"))
             else:
                 embed = create_timetable_embed(class_name, lessons, user=interaction.user)
                 await interaction.followup.send(embed=embed)
@@ -282,18 +260,10 @@ class TimetableCog(commands.Cog):
                 events_text=_build_events_text(events_data),
                 user_name=interaction.user.display_name,
             )
-            embed = discord.Embed(color=discord.Color.dark_grey())
-            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
-            embed.description = f"**{today.strftime('%a, %d %b %Y')} (Day {day})**"
-            if weather_text:
-                embed.description += f"\n\n{weather_text}"
-            maybe_add_dse(embed, class_name)
-            embed.set_image(url="attachment://timetable.png")
-            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
             view = TimetableView(self.api, class_name, today, interaction.user, image=True)
             view._update_buttons()
             await interaction.followup.send(
-                embed=embed, file=discord.File(buf, filename="timetable.png"), view=view)
+                file=discord.File(buf, filename="timetable.png"), view=view)
         else:
             embed = create_timetable_embed(
                 class_name, lessons,
@@ -375,18 +345,10 @@ class TimetableCog(commands.Cog):
                 events_text=_build_events_text(events_data),
                 user_name=interaction.user.display_name,
             )
-            embed = discord.Embed(color=discord.Color.dark_grey())
-            embed.set_author(name="SPYC Siu Ying", icon_url=icon_url)
-            embed.description = f"**{today.strftime('%a, %d %b %Y')} (Day {day})**"
-            if weather_text:
-                embed.description += f"\n\n{weather_text}"
-            maybe_add_dse(embed, class_name)
-            embed.set_image(url="attachment://timetable.png")
-            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=icon_url)
             view = TimetableView(self.api, class_name, today, interaction.user, image=True)
             view._update_buttons()
             await interaction.followup.send(
-                embed=embed, file=discord.File(buf, filename="timetable.png"), view=view)
+                file=discord.File(buf, filename="timetable.png"), view=view)
         else:
             embed = create_timetable_embed(
                 class_name, lessons,

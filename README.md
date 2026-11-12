@@ -114,13 +114,17 @@ spyc-timetable-bot/
 │   └── admin_cog.py       🛡️ Admin: /stats* /logs /blacklist* /feedback*
 │                            (auto-records every command used)
 │
+├── assets/                🎨 Fonts used by the timetable card renderer
+│   ├── GoogleSansFlex.ttf  🔤 Latin font embedded in the PNG card
+│   └── OFL.txt             📜 Font licence
+│
 ├── utils/                 🛠️ Helper modules (no commands here)
 │   ├── api.py             🌐 SPYC timetable API client (iot.spyc.hk)
 │   ├── embeds.py          ⏰ Lesson times (TIME_SLOTS), subject names,
 │   │                      DSE exam date, all embed builders, help menu
 │   ├── weather.py         🌦️ HK Observatory + Open-Meteo fetching,
 │   │                      school closure logic (typhoon/rainstorm)
-│   ├── render.py          🖼️ Pillow image renderer for image-mode timetable
+│   ├── render.py          🖼️ 900×1000 timetable card renderer (raw PNG)
 │   └── ai.py              🧠 Gemini + NVIDIA NIM API clients
 │
 └── (auto-generated on first run — you don't create these)
@@ -325,13 +329,17 @@ spyc-timetable-bot/
 │   └── admin_cog.py       🛡️ 管理員：/stats* /logs /blacklist* /feedback*
 │                            （自動記錄所有指令使用）
 │
+├── assets/                🎨 時間表卡片用嘅字體
+│   ├── GoogleSansFlex.ttf  🔤 嵌入 PNG 卡片嘅拉丁字體
+│   └── OFL.txt             📜 字體授權
+│
 ├── utils/                 🛠️ 輔助模組（呢度冇指令）
 │   ├── api.py             🌐 SPYC 時間表 API 客戶端 (iot.spyc.hk)
 │   ├── embeds.py          ⏰ 上堂時間 (TIME_SLOTS)、科目名對照、
 │   │                      DSE 考試日期、所有 embed 產生器、說明選單
 │   ├── weather.py         🌦️ 天文台 + Open-Meteo 抓取、
 │   │                      停課判斷邏輯（風球／暴雨）
-│   ├── render.py          🖼️ Pillow 圖片渲染（圖片模式時間表）
+│   ├── render.py          🖼️ 900×1000 時間表卡片渲染（直接回傳 PNG）
 │   └── ai.py              🧠 Gemini + NVIDIA NIM API 客戶端
 │
 └──（首次運行自動生成 — 唔使自己建立）
